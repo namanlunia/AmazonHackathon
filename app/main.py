@@ -7,8 +7,9 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.config import get_settings
 from app.routers import Metrics, alexa, devices
@@ -59,15 +60,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.USE_AWS:
         try:
             await store.ensure_table()
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning(
-                f"Failed to ensure DynamoDB table, continuing with fallback: {exc}"
-            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(f"Failed to ensure DynamoDB table, continuing with fallback: {exc}")
 
     ws_manager.start_heartbeat()
-    logging.getLogger(__name__).info(
-        f"Amazon Continuity Hub started in {'AWS' if settings.USE_AWS else 'LOCAL'} mode"
-    )
+    logging.getLogger(__name__).info(f"Amazon Continuity Hub started in {'AWS' if settings.USE_AWS else 'LOCAL'} mode")
     yield
     await ws_manager.stop_heartbeat()
     logging.getLogger(__name__).info("Amazon Continuity Hub shut down")
@@ -81,10 +78,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Wildcard origin with allow_credentials=True is disallowed by CORS specification
+allow_creds = False if settings.CORS_ORIGINS == ["*"] else True
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -106,5 +105,10 @@ async def health_check() -> dict[str, Any]:
 
 
 @app.get("/metrics")
-async def metrics_endpoint() -> dict[str, Any]:
+async def metrics_endpoint() -> Response:
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/stats")
+async def stats_endpoint() -> dict[str, Any]:
     return Metrics.get_metrics()

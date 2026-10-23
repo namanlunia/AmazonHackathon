@@ -86,20 +86,46 @@
             },
             {
               "name": "action",
-              "type": "AMAZON.SearchQuery"
+              "type": "HUB_POWER_ACTION"
             }
           ],
           "samples": [
-            "turn {action} {device}",
             "turn {action} the {device}",
-            "switch {action} {device}",
+            "turn {action} {device}",
+            "switch {action} the {device}",
             "{action} the {device}",
-            "set {device} {action}",
-            "power {action} {device}"
+            "power {action} the {device}",
+            "set the {device} {action}"
           ]
         }
       ],
-      "types": []
+      "types": [
+        {
+          "name": "HUB_POWER_ACTION",
+          "values": [
+            {
+              "name": {
+                "value": "on"
+              }
+            },
+            {
+              "name": {
+                "value": "off"
+              }
+            },
+            {
+              "name": {
+                "value": "to on"
+              }
+            },
+            {
+              "name": {
+                "value": "to off"
+              }
+            }
+          ]
+        }
+      ]
     }
   }
 }

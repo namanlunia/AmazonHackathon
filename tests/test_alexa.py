@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
@@ -15,22 +16,28 @@ def test_alexa_launch_and_system_intents(client: TestClient) -> None:
     assert data["response"]["reprompt"] is not None
 
     # 2. AMAZON.HelpIntent
-    help_res = client.post("/alexa", json={
-        "request": {
-            "type": "IntentRequest",
-            "intent": {"name": "AMAZON.HelpIntent"},
-        }
-    })
+    help_res = client.post(
+        "/alexa",
+        json={
+            "request": {
+                "type": "IntentRequest",
+                "intent": {"name": "AMAZON.HelpIntent"},
+            }
+        },
+    )
     assert help_res.status_code == 200
     assert help_res.json()["response"]["shouldEndSession"] is False
 
     # 3. AMAZON.StopIntent
-    stop_res = client.post("/alexa", json={
-        "request": {
-            "type": "IntentRequest",
-            "intent": {"name": "AMAZON.StopIntent"},
-        }
-    })
+    stop_res = client.post(
+        "/alexa",
+        json={
+            "request": {
+                "type": "IntentRequest",
+                "intent": {"name": "AMAZON.StopIntent"},
+            }
+        },
+    )
     assert stop_res.status_code == 200
     assert stop_res.json()["response"]["shouldEndSession"] is True
     assert "Goodbye" in stop_res.json()["response"]["outputSpeech"]["text"]
@@ -108,7 +115,7 @@ def test_alexa_continue_on_fire_tv_flow(client: TestClient) -> None:
             }
         },
     )
-    assert "no active video" in res_none.json()["response"]["outputSpeech"]["text"].lower()
+    assert "nothing is active" in res_none.json()["response"]["outputSpeech"]["text"].lower()
 
     # 2. Add video in Firefox but Fire TV is offline
     client.put(
@@ -171,16 +178,20 @@ def test_alexa_smart_home_control(client: TestClient) -> None:
         _ = light_ws.receive_text()
 
         # Update initial light metadata
-        light_ws.send_text(json.dumps({
-            "type": "state_update",
-            "source_device_id": "light-1",
-            "payload": {
-                "device_type": "smart_home",
-                "name": "Porch Light",
-                "power": "on",
-                "attributes": {},
-            },
-        }))
+        light_ws.send_text(
+            json.dumps(
+                {
+                    "type": "state_update",
+                    "source_device_id": "light-1",
+                    "payload": {
+                        "device_type": "smart_home",
+                        "name": "Porch Light",
+                        "power": "on",
+                        "attributes": {},
+                    },
+                }
+            )
+        )
         _ = light_ws.receive_text()  # ack
 
         # Voice command to turn off
@@ -209,9 +220,9 @@ def test_alexa_smart_home_control(client: TestClient) -> None:
         assert cmd["payload"]["action"] == "power_off"
 
 
-def test_alexa_auth_and_resilience(client: TestClient) -> None:
-    settings = get_settings()
-    settings.HUB_API_KEY = "secret-token-123"
+def test_alexa_auth_and_resilience(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_API_KEY", "secret-token-123")
+    get_settings.cache_clear()
 
     try:
         # Unauthorized without header
@@ -235,4 +246,4 @@ def test_alexa_auth_and_resilience(client: TestClient) -> None:
         assert res_bad.status_code == 200
         assert "could not understand" in res_bad.json()["response"]["outputSpeech"]["text"].lower()
     finally:
-        settings.HUB_API_KEY = ""
+        get_settings.cache_clear()

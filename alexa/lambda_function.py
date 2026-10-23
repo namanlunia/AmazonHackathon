@@ -24,7 +24,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if hub_api_key:
         headers["X-API-Key"] = hub_api_key
 
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310
         url=endpoint,
         data=payload_bytes,
         headers=headers,
@@ -32,7 +32,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=6.0) as resp:
+        with urllib.request.urlopen(req, timeout=6.0) as resp:  # noqa: S310
             status_code = resp.getcode()
             response_body = resp.read().decode("utf-8")
             if status_code == 200:
@@ -41,7 +41,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except urllib.error.HTTPError as http_err:
         err_msg = http_err.read().decode("utf-8", errors="ignore")
         logger.error(f"HTTPError contacting hub: {http_err.code} - {err_msg}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error(f"Failed to communicate with Continuity Hub: {exc}")
 
     # Fallback response so Alexa speaks gracefully without skill failure

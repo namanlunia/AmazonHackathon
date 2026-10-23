@@ -1,0 +1,50 @@
+flowchart TD
+    subgraph Clients["Edge Clients"]
+        Firefox["Firefox Extension<br/>(WebSocket)"]
+        FireTV["Fire TV App<br/>(WebSocket)"]
+        SmartHome["Smart Home Device<br/>(WebSocket)"]
+        AlexaSkill["Alexa Voice Service<br/>(ASK HTTPS)"]
+        AlexaLambda["Alexa Lambda Forwarder<br/>(Python 3.11)"]
+        RESTClient["Admin / REST API<br/>(HTTP)"]
+    end
+
+    AlexaSkill --> AlexaLambda
+
+    subgraph AWS_Edge["AWS Edge & Ingress"]
+        ALB["Application Load Balancer<br/>(TLS 1.3 / Port 80 & 443)"]
+    end
+
+    Firefox -->|WS State & Commands| ALB
+    FireTV -->|WS State & Commands| ALB
+    SmartHome -->|WS State & Commands| ALB
+    AlexaLambda -->|HTTPS /alexa| ALB
+    RESTClient -->|HTTPS REST| ALB
+
+    subgraph ECS_Cluster["AWS ECS Fargate"]
+        HubTask["Amazon Continuity Hub<br/>(FastAPI / Single-Worker Uvicorn)"]
+        Prometheus["Prometheus / Datadog Agent<br/>(Scrapes /metrics)"]
+    end
+
+    ALB -->|Reverse Proxy :8000| HubTask
+    Prometheus -.->|GET /metrics| HubTask
+
+    subgraph AWS_Services["Managed Cloud Services"]
+        DynamoDB[("DynamoDB<br/>AmazonContinuityState<br/>(TTL & Optimistic Locks)")]
+        Bedrock["Amazon Bedrock<br/>(Nova Micro / Converse API)"]
+        SSM["AWS SSM Parameter Store<br/>(/continuity-hub/HUB_API_KEY)"]
+        CloudWatch["CloudWatch Logs<br/>(Structured JSON)"]
+    end
+
+    HubTask -->|Optimistic State Sync| DynamoDB
+    HubTask -->|Contextual Reasoning| Bedrock
+    HubTask -->|Secrets on Startup| SSM
+    HubTask -->|Stdout Stream| CloudWatch
+
+    subgraph CI_CD["GitHub Actions CI/CD"]
+        GHA["GitHub Actions Runner<br/>(OIDC Session)"]
+        ECR["Amazon ECR<br/>(Docker Registry)"]
+    end
+
+    GHA -->|Assume Role via OIDC| AWS_Services
+    GHA -->|Push SHA & Latest Tags| ECR
+    GHA -->|Render & Deploy Taskdef| HubTask

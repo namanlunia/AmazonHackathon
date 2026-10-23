@@ -18,9 +18,7 @@ async def test_state_store_initial_and_update() -> None:
     assert initial.active_context is None
 
     def mutate(st: UnifiedState) -> None:
-        st.history.append(
-            ContextEvent(source_device_id="dev-1", description="event 1")
-        )
+        st.history.append(ContextEvent(source_device_id="dev-1", description="event 1"))
 
     updated = await store.update(user_id, mutate)
     assert updated.version == 2
@@ -36,9 +34,7 @@ async def test_state_store_concurrency() -> None:
 
     async def worker(idx: int) -> None:
         def mut(st: UnifiedState) -> None:
-            st.history.append(
-                ContextEvent(source_device_id=f"dev-{idx}", description=f"action {idx}")
-            )
+            st.history.append(ContextEvent(source_device_id=f"dev-{idx}", description=f"action {idx}"))
 
         await store.update(user_id, mut)
 

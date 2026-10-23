@@ -7,7 +7,7 @@ import boto3
 from botocore.config import Config
 
 from app.config import Settings, get_settings
-from app.models import DeviceType, UnifiedState
+from app.models import DeviceType, UnifiedState, is_context_fresh
 
 logger = logging.getLogger(__name__)
 
@@ -32,24 +32,16 @@ class BedrockService:
         online_devices = {}
         for dev_id, dev in state.devices.items():
             if dev.online:
-                payload_data = (
-                    dev.payload.model_dump()
-                    if hasattr(dev.payload, "model_dump")
-                    else dev.payload
-                )
+                payload_data = dev.payload.model_dump() if hasattr(dev.payload, "model_dump") else dev.payload
                 online_devices[dev_id] = {
                     "device_type": dev.device_type,
                     "payload": payload_data,
                 }
 
         return {
-            "active_context": (
-                state.active_context.model_dump() if state.active_context else None
-            ),
+            "active_context": (state.active_context.model_dump() if state.active_context else None),
             "online_devices": online_devices,
-            "recent_events": [
-                event.model_dump() for event in state.history[-5:]
-            ],
+            "recent_events": [event.model_dump() for event in state.history[-5:]],
         }
 
     def _mock_answer(self, question: str, state: UnifiedState) -> str:
@@ -59,11 +51,7 @@ class BedrockService:
         if any(w in q for w in ["tab", "open", "browser", "firefox"]):
             for dev in state.devices.values():
                 if dev.device_type == DeviceType.firefox:
-                    payload = (
-                        dev.payload.model_dump()
-                        if hasattr(dev.payload, "model_dump")
-                        else dev.payload
-                    )
+                    payload = dev.payload.model_dump() if hasattr(dev.payload, "model_dump") else dev.payload
                     tabs = payload.get("tabs", [])
                     if tabs:
                         active_tabs = [t for t in tabs if t.get("active")]
@@ -72,15 +60,20 @@ class BedrockService:
                         return f"You have {title} open in your browser."
             return "There are no open tabs in your browser."
 
+        # Continuity & active context
+        if any(w in q for w in ["continue", "resume", "active"]):
+            if state.active_context and is_context_fresh(state, self.settings.ACTIVE_CONTEXT_MAX_AGE_SECONDS):
+                return (
+                    f"You were watching {state.active_context.title} at "
+                    f"{int(state.active_context.position_seconds)} seconds."
+                )
+            return "Nothing is active to continue right now."
+
         # Fire TV and playback
         if any(w in q for w in ["playing", "watching", "tv", "video"]):
             for dev in state.devices.values():
                 if dev.device_type == DeviceType.fire_tv:
-                    payload = (
-                        dev.payload.model_dump()
-                        if hasattr(dev.payload, "model_dump")
-                        else dev.payload
-                    )
+                    payload = dev.payload.model_dump(mode="json") if hasattr(dev.payload, "model_dump") else dev.payload
                     now_playing = payload.get("now_playing")
                     if now_playing and now_playing.get("title"):
                         return f"Fire TV is playing {now_playing['title']} on {now_playing.get('app', 'app')}."
@@ -93,26 +86,14 @@ class BedrockService:
             home_devices = []
             for dev in state.devices.values():
                 if dev.device_type == DeviceType.smart_home:
-                    payload = (
-                        dev.payload.model_dump()
-                        if hasattr(dev.payload, "model_dump")
-                        else dev.payload
-                    )
+                    payload = dev.payload.model_dump(mode="json") if hasattr(dev.payload, "model_dump") else dev.payload
                     name = payload.get("name", dev.device_id)
                     power = payload.get("power", "unknown")
-                    home_devices.append(f"{name} is {power}")
+                    power_str = power.value if hasattr(power, "value") else str(power)
+                    home_devices.append(f"{name} is {power_str}")
             if home_devices:
                 return f"Smart home status: {', '.join(home_devices)}."
             return "No smart home devices are currently connected."
-
-        # Continuity & active context
-        if any(w in q for w in ["continue", "resume", "active"]):
-            if state.active_context:
-                return (
-                    f"You were watching {state.active_context.title} at "
-                    f"{int(state.active_context.position_seconds)} seconds."
-                )
-            return "Nothing is active to continue right now."
 
         # Default summary
         if state.active_context:
@@ -139,19 +120,20 @@ class BedrockService:
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"text": f"Context: {context_str}\nQuestion: {question}"}
-                        ],
+                        "content": [{"text": f"Context: {context_str}\nQuestion: {question}"}],
                     }
                 ],
                 inferenceConfig={"maxTokens": 200, "temperature": 0.2},
             )
-            return resp["output"]["message"]["content"][0]["text"].strip()
+            content = resp.get("output", {}).get("message", {}).get("content", [])
+            if not content or not content[0].get("text", "").strip():
+                raise ValueError("Empty response received from Bedrock Converse")
+            return content[0]["text"].strip()
 
         try:
             speech = await asyncio.wait_for(asyncio.to_thread(_sync_bedrock), timeout=4.5)
             return speech[:300], False
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 f"Bedrock converse failed or timed out: {exc}; falling back to mock",
                 extra={"event_type": "bedrock_fallback"},

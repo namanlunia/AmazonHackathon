@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -5,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request
 
+from app.alexa_verification import verify_alexa_request
 from app.bedrock_service import bedrock_service
 from app.config import get_settings
 from app.models import (
@@ -12,11 +14,13 @@ from app.models import (
     AlexaResponse,
     CommandAction,
     ContextEvent,
+    ContextKind,
     DeviceType,
     Envelope,
     EnvelopeType,
     PowerState,
     UnifiedState,
+    is_context_fresh,
 )
 from app.routers import Metrics, verify_api_key
 from app.state_store import get_store
@@ -50,10 +54,12 @@ async def handle_alexa_request(
     start_time = time.perf_counter()
     Metrics.alexa_requests += 1
 
+    raw_body = await verify_alexa_request(request)
+
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
         alexa_req = AlexaRequest.model_validate(body)
-    except Exception as parse_err:  # noqa: BLE001
+    except Exception as parse_err:
         logger.warning(f"Error parsing Alexa request body: {parse_err}")
         return AlexaResponse.build("Sorry, I could not understand that request.", should_end_session=True)
 
@@ -94,9 +100,13 @@ async def handle_alexa_request(
 
             elif intent_name == "ContinueOnFireTVIntent":
                 state = await store.get(user_id)
-                if not state.active_context or not state.active_context.url:
+                if (
+                    not state.active_context
+                    or not is_context_fresh(state, settings.ACTIVE_CONTEXT_MAX_AGE_SECONDS)
+                    or not state.active_context.url
+                ):
                     resp = AlexaResponse.build(
-                        "There is no active video or page to continue.",
+                        "Nothing is active to continue right now.",
                         should_end_session=True,
                     )
                 else:
@@ -109,12 +119,14 @@ async def handle_alexa_request(
                     else:
                         target_id = fire_tv_devices[0]
                         ctx = state.active_context
+                        is_page = ctx.kind == ContextKind.page or ctx.position_seconds == 0
+                        action = CommandAction.open_url.value if is_page else CommandAction.play.value
                         cmd_envelope = Envelope(
                             type=EnvelopeType.command,
                             source_device_id="alexa",
                             target_device_id=target_id,
                             payload={
-                                "action": CommandAction.play.value,
+                                "action": action,
                                 "url": ctx.url,
                                 "position_seconds": ctx.position_seconds,
                             },
@@ -135,7 +147,10 @@ async def handle_alexa_request(
                         await store.update(user_id, record_event)
                         pos_int = int(ctx.position_seconds)
                         title_clean = ctx.title[:50]
-                        speech = f"Continuing {title_clean} on Fire TV at {pos_int} seconds."
+                        if is_page:
+                            speech = f"Opened {title_clean} on Fire TV."
+                        else:
+                            speech = f"Continuing {title_clean} on Fire TV at {pos_int} seconds."
                         resp = AlexaResponse.build(speech, should_end_session=True)
 
             elif intent_name == "SendToBrowserIntent":

@@ -1,0 +1,90 @@
+name: CD Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target_revision:
+        description: "Target Task Definition revision to deploy (leave blank for latest build)"
+        required: false
+        type: string
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Production ECS
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: continuity-hub-deploy
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        if: ${{ inputs.target_revision == '' }}
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Image to ECR
+        if: ${{ inputs.target_revision == '' }}
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'amazon-continuity-hub' }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+        id: build-image
+
+      - name: Render Task Definition
+        id: render-task-def
+        if: ${{ inputs.target_revision == '' }}
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/taskdef-render.json
+          container-name: hub
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS Task Definition
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE || 'amazon-continuity-hub' }}
+          cluster: ${{ vars.ECS_CLUSTER || 'amazon-continuity-hub-cluster' }}
+          wait-for-service-stability: true
+
+      - name: Post-Deploy Health Check Smoke Test
+        id: smoke-test
+        env:
+          ALB_URL: ${{ vars.ALB_URL || secrets.ALB_URL }}
+        run: |
+          if [[ -n "$ALB_URL" ]]; then
+            echo "Running smoke test against $ALB_URL/health..."
+            curl --fail --retry 5 --retry-delay 5 --max-time 10 "$ALB_URL/health"
+            echo "Smoke test passed successfully."
+          else
+            echo "ALB_URL not set; skipping live endpoint smoke check."
+          fi
+
+      - name: Automatic Rollback on Smoke Failure
+        if: failure() && steps.deploy.conclusion == 'success'
+        run: |
+          echo "Deployment smoke test failed! Executing automated rollback..."
+          ./.github/scripts/rollback.sh "${{ vars.ECS_CLUSTER || 'amazon-continuity-hub-cluster' }}" "${{ vars.ECS_SERVICE || 'amazon-continuity-hub' }}"

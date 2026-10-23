@@ -1,12 +1,12 @@
 import uuid
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class DeviceType(str, Enum):
+class DeviceType(StrEnum):
     firefox = "firefox"
     fire_tv = "fire_tv"
     smart_home = "smart_home"
@@ -25,7 +25,7 @@ class FirefoxPayload(BaseModel):
     tabs: list[Tab] = Field(default_factory=list)
 
 
-class NowPlayingState(str, Enum):
+class NowPlayingState(StrEnum):
     playing = "playing"
     paused = "paused"
     idle = "idle"
@@ -45,7 +45,7 @@ class FireTVPayload(BaseModel):
     now_playing: NowPlaying | None = None
 
 
-class PowerState(str, Enum):
+class PowerState(StrEnum):
     on = "on"
     off = "off"
 
@@ -76,7 +76,7 @@ class DeviceState(BaseModel):
     payload: DevicePayload | dict[str, Any] = Field(default_factory=dict)
 
 
-class ContextKind(str, Enum):
+class ContextKind(StrEnum):
     video = "video"
     page = "page"
     audio = "audio"
@@ -109,7 +109,7 @@ class UnifiedState(BaseModel):
     history: list[ContextEvent] = Field(default_factory=list)
 
 
-class EnvelopeType(str, Enum):
+class EnvelopeType(StrEnum):
     snapshot = "snapshot"
     state_update = "state_update"
     command = "command"
@@ -129,7 +129,7 @@ class Envelope(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class CommandAction(str, Enum):
+class CommandAction(StrEnum):
     play = "play"
     pause = "pause"
     open_url = "open_url"
@@ -204,11 +204,7 @@ class AlexaResponse(BaseModel):
         should_end_session: bool = True,
         reprompt_text: str | None = None,
     ) -> "AlexaResponse":
-        reprompt = (
-            {"outputSpeech": {"type": "PlainText", "text": reprompt_text}}
-            if reprompt_text
-            else None
-        )
+        reprompt = {"outputSpeech": {"type": "PlainText", "text": reprompt_text}} if reprompt_text else None
         return cls(
             version="1.0",
             response=AlexaResponseBody(
@@ -217,3 +213,17 @@ class AlexaResponse(BaseModel):
                 reprompt=reprompt,
             ),
         )
+
+
+def is_context_fresh(state: "UnifiedState", max_age_seconds: int = 1800) -> bool:
+    """Return whether active_context exists and is fresher than max_age_seconds."""
+    if not state.active_context:
+        return False
+    try:
+        updated = datetime.fromisoformat(state.active_context.updated_at)
+        now = datetime.now(UTC)
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC)
+        return 0 <= (now - updated).total_seconds() <= max_age_seconds
+    except Exception:
+        return False

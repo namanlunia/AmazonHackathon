@@ -15,31 +15,39 @@ def test_ws_single_device_lifecycle(client: TestClient) -> None:
         assert snap["payload"]["user_id"] == user_id
 
         # 2. Ping-pong
-        ws.send_text(json.dumps({
-            "type": "ping",
-            "source_device_id": dev_id,
-            "payload": {"nonce": 123},
-        }))
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "ping",
+                    "source_device_id": dev_id,
+                    "payload": {"nonce": 123},
+                }
+            )
+        )
         pong = json.loads(ws.receive_text())
         assert pong["type"] == "pong"
         assert pong["payload"]["nonce"] == 123
 
         # 3. Publish state_update
-        ws.send_text(json.dumps({
-            "type": "state_update",
-            "source_device_id": dev_id,
-            "payload": {
-                "device_type": "firefox",
-                "tabs": [
-                    {
-                        "title": "AWS re:Invent Keynote",
-                        "url": "https://aws.amazon.com/reinvent",
-                        "active": True,
-                        "media_position_seconds": 120.5,
-                    }
-                ],
-            },
-        }))
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "state_update",
+                    "source_device_id": dev_id,
+                    "payload": {
+                        "device_type": "firefox",
+                        "tabs": [
+                            {
+                                "title": "AWS re:Invent Keynote",
+                                "url": "https://aws.amazon.com/reinvent",
+                                "active": True,
+                                "media_position_seconds": 120.5,
+                            }
+                        ],
+                    },
+                }
+            )
+        )
         ack = json.loads(ws.receive_text())
         assert ack["type"] == "ack"
 
@@ -70,21 +78,25 @@ def test_ws_mesh_broadcast_and_disconnect(client: TestClient) -> None:
             assert presence2["payload"]["online"] is True
 
             # dev2 publishes state update
-            ws2.send_text(json.dumps({
-                "type": "state_update",
-                "source_device_id": "dev2",
-                "payload": {
-                    "device_type": "fire_tv",
-                    "now_playing": {
-                        "title": "Lord of the Rings",
-                        "app": "Prime Video",
-                        "url": "https://amazon.com/lotr",
-                        "position_seconds": 300.0,
-                        "duration_seconds": 10000.0,
-                        "state": "playing",
-                    },
-                },
-            }))
+            ws2.send_text(
+                json.dumps(
+                    {
+                        "type": "state_update",
+                        "source_device_id": "dev2",
+                        "payload": {
+                            "device_type": "fire_tv",
+                            "now_playing": {
+                                "title": "Lord of the Rings",
+                                "app": "Prime Video",
+                                "url": "https://amazon.com/lotr",
+                                "position_seconds": 300.0,
+                                "duration_seconds": 10000.0,
+                                "state": "playing",
+                            },
+                        },
+                    }
+                )
+            )
             ack2 = json.loads(ws2.receive_text())
             assert ack2["type"] == "ack"
 

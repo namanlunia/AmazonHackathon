@@ -10,6 +10,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        frozen=True,
     )
 
     USE_AWS: bool = False
@@ -21,6 +22,11 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["*"]
     LOG_LEVEL: str = "INFO"
     STATE_TTL_DAYS: int = 7
+
+    ACTIVE_CONTEXT_MAX_AGE_SECONDS: int = 1800
+    HEARTBEAT_INTERVAL_SECONDS: int = 20
+    HEARTBEAT_TIMEOUT_SECONDS: int = 60
+    ALEXA_ENFORCE_SIGNATURE: bool = False
 
 
 @lru_cache

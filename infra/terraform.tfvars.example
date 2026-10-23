@@ -1,0 +1,6 @@
+aws_region          = "us-east-1"
+environment         = "production"
+app_name            = "amazon-continuity-hub"
+dynamodb_table_name = "AmazonContinuityState"
+container_image     = "123456789012.dkr.ecr.us-east-1.amazonaws.com/amazon-continuity-hub:latest"
+certificate_arn     = "arn:aws:acm:us-east-1:123456789012:certificate/your-cert-uuid"

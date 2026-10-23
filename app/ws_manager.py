@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from fastapi import WebSocket
 
+from app.config import get_settings
 from app.models import DeviceType, Envelope, EnvelopeType
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class ConnectionManager:
             if existing:
                 try:
                     await existing.websocket.close(code=1000, reason="Replaced by new connection")
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.debug(f"Error closing replaced socket: {exc}")
 
             self._rooms[user_id][device_id] = DeviceConnection(
@@ -54,9 +55,19 @@ class ConnectionManager:
                 extra={"user_id": user_id, "device_id": device_id, "event_type": "ws_connect"},
             )
 
-    async def disconnect(self, user_id: str, device_id: str) -> None:
+    async def disconnect(
+        self,
+        user_id: str,
+        device_id: str,
+        websocket: WebSocket | None = None,
+    ) -> None:
         async with self._lock:
             if user_id in self._rooms and device_id in self._rooms[user_id]:
+                current_conn = self._rooms[user_id][device_id]
+                if websocket is not None and current_conn.websocket is not websocket:
+                    # Connection was replaced by a newer socket; do nothing
+                    return
+
                 del self._rooms[user_id][device_id]
                 if not self._rooms[user_id]:
                     del self._rooms[user_id]
@@ -65,13 +76,25 @@ class ConnectionManager:
                     extra={"user_id": user_id, "device_id": device_id, "event_type": "ws_disconnect"},
                 )
 
+    async def is_current(
+        self,
+        user_id: str,
+        device_id: str,
+        websocket: WebSocket,
+    ) -> bool:
+        """Return whether the provided websocket is still the actively registered one."""
+        async with self._lock:
+            room = self._rooms.get(user_id)
+            if not room:
+                return False
+            conn = room.get(device_id)
+            return conn is not None and conn.websocket is websocket
+
     def mark_alive(self, user_id: str, device_id: str) -> None:
         if user_id in self._rooms and device_id in self._rooms[user_id]:
             self._rooms[user_id][device_id].last_active = time.time()
 
-    async def send_to_device(
-        self, user_id: str, device_id: str, envelope: Envelope
-    ) -> bool:
+    async def send_to_device(self, user_id: str, device_id: str, envelope: Envelope) -> bool:
         conn: DeviceConnection | None = None
         async with self._lock:
             if user_id in self._rooms:
@@ -83,12 +106,12 @@ class ConnectionManager:
         try:
             await conn.websocket.send_text(envelope.model_dump_json())
             return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 f"Failed to send to device {device_id}: {exc}",
                 extra={"user_id": user_id, "device_id": device_id, "event_type": "ws_send_fail"},
             )
-            await self.disconnect(user_id, device_id)
+            await self.disconnect(user_id, device_id, conn.websocket)
             return False
 
     async def broadcast(
@@ -105,32 +128,26 @@ class ConnectionManager:
                     continue
                 recipients.append((dev_id, conn.websocket))
 
-        dead_devices: set[str] = set()
+        dead_devices: list[tuple[str, WebSocket]] = []
         text_data = envelope.model_dump_json()
         for dev_id, ws in recipients:
             try:
                 await ws.send_text(text_data)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     f"Broadcast failed to {dev_id}: {exc}",
                     extra={"user_id": user_id, "device_id": dev_id, "event_type": "ws_broadcast_fail"},
                 )
-                dead_devices.add(dev_id)
+                dead_devices.append((dev_id, ws))
 
-        for dev_id in dead_devices:
-            await self.disconnect(user_id, dev_id)
+        for dev_id, ws in dead_devices:
+            await self.disconnect(user_id, dev_id, ws)
 
-    def find_devices(
-        self, user_id: str, device_type: DeviceType | None = None
-    ) -> list[str]:
+    def find_devices(self, user_id: str, device_type: DeviceType | None = None) -> list[str]:
         room = self._rooms.get(user_id, {})
         if device_type is None:
             return list(room.keys())
-        return [
-            dev_id
-            for dev_id, conn in room.items()
-            if conn.device_type == device_type
-        ]
+        return [dev_id for dev_id, conn in room.items() if conn.device_type == device_type]
 
     def online_count(self) -> int:
         return sum(len(devices) for devices in self._rooms.values())
@@ -138,7 +155,8 @@ class ConnectionManager:
     async def _heartbeat_worker(self) -> None:
         while True:
             try:
-                await asyncio.sleep(20)
+                settings = get_settings()
+                await asyncio.sleep(settings.HEARTBEAT_INTERVAL_SECONDS)
                 now = time.time()
                 to_disconnect: list[tuple[str, str]] = []
                 pings: list[tuple[str, str, WebSocket]] = []
@@ -146,7 +164,7 @@ class ConnectionManager:
                 async with self._lock:
                     for uid, devices in self._rooms.items():
                         for did, conn in devices.items():
-                            if now - conn.last_active > 60:
+                            if now - conn.last_active > settings.HEARTBEAT_TIMEOUT_SECONDS:
                                 to_disconnect.append((uid, did))
                             else:
                                 pings.append((uid, did, conn.websocket))
@@ -169,11 +187,11 @@ class ConnectionManager:
                 for uid, did, ws in pings:
                     try:
                         await ws.send_text(ping_str)
-                    except Exception:  # noqa: BLE001
-                        await self.disconnect(uid, did)
+                    except Exception:
+                        await self.disconnect(uid, did, ws)
             except asyncio.CancelledError:
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error(f"Error in heartbeat loop: {exc}")
 
     def start_heartbeat(self) -> None:

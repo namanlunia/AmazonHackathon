@@ -12,7 +12,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app.bedrock_service import bedrock_service
 from app.config import get_settings
@@ -21,6 +21,7 @@ from app.models import (
     Command,
     ContextEvent,
     ContextKind,
+    DevicePayload,
     DeviceState,
     DeviceType,
     Envelope,
@@ -35,10 +36,28 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["devices"])
 
+device_payload_adapter = TypeAdapter(DevicePayload)
+
 
 class AskRequest(BaseModel):
     user_id: str
     question: str
+
+
+def _validate_device_payload(payload: dict[str, Any], expected_type: DeviceType) -> str | None:
+    p_type = payload.get("device_type")
+    if p_type and p_type != expected_type.value:
+        return f"Mismatched device_type: payload has '{p_type}', expected '{expected_type.value}'"
+
+    payload_to_check = dict(payload)
+    if "device_type" not in payload_to_check:
+        payload_to_check["device_type"] = expected_type.value
+
+    try:
+        device_payload_adapter.validate_python(payload_to_check)
+        return None
+    except ValidationError as err:
+        return f"Invalid payload structure: {err}"
 
 
 def _apply_state_payload(
@@ -73,6 +92,15 @@ def _apply_state_payload(
                         source_device_id=device_id,
                         updated_at=now_iso,
                     )
+                else:
+                    state.active_context = ActiveContext(
+                        kind=ContextKind.page,
+                        title=tab.get("title", "Active Page"),
+                        url=tab.get("url"),
+                        position_seconds=0.0,
+                        source_device_id=device_id,
+                        updated_at=now_iso,
+                    )
                 break
     elif device_type == DeviceType.fire_tv:
         now_playing = payload.get("now_playing")
@@ -85,6 +113,8 @@ def _apply_state_payload(
                 source_device_id=device_id,
                 updated_at=now_iso,
             )
+        elif now_playing and now_playing.get("state") == "idle":
+            state.active_context = None
 
     state.history.append(
         ContextEvent(
@@ -158,7 +188,7 @@ async def websocket_endpoint(
             try:
                 data = json.loads(raw_text)
                 env = Envelope.model_validate(data)
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 err_env = Envelope(
                     type=EnvelopeType.error,
                     source_device_id="server",
@@ -181,9 +211,21 @@ async def websocket_endpoint(
             elif env.type == EnvelopeType.state_update:
                 payload_data = env.payload
 
+                err_msg = _validate_device_payload(payload_data, device_type)
+                if err_msg:
+                    err_env = Envelope(
+                        type=EnvelopeType.error,
+                        source_device_id="server",
+                        target_device_id=device_id,
+                        payload={"error": err_msg},
+                    )
+                    await websocket.send_text(err_env.model_dump_json())
+                    continue
+
                 def create_state_updater(d: dict[str, Any]):
                     def _updater(st: UnifiedState) -> None:
                         _apply_state_payload(st, device_id, device_type, d)
+
                     return _updater
 
                 await store.update(user_id, create_state_updater(payload_data))
@@ -205,9 +247,7 @@ async def websocket_endpoint(
                 await websocket.send_text(ack_env.model_dump_json())
             elif env.type == EnvelopeType.command:
                 if env.target_device_id:
-                    sent = await ws_manager.send_to_device(
-                        user_id, env.target_device_id, env
-                    )
+                    sent = await ws_manager.send_to_device(user_id, env.target_device_id, env)
                     Metrics.events_routed += 1
                     if not sent:
                         err_env = Envelope(
@@ -218,31 +258,31 @@ async def websocket_endpoint(
                         )
                         await websocket.send_text(err_env.model_dump_json())
 
-    except (WebSocketDisconnect, Exception) as exc:  # noqa: BLE001
-        logger.info(
-            f"WebSocket closed for {device_id}: {exc}",
-            extra={"user_id": user_id, "device_id": device_id, "event_type": "ws_disconnect"},
-        )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception(f"Unexpected error in WebSocket loop for {device_id}")
     finally:
-        await ws_manager.disconnect(user_id, device_id)
+        if await ws_manager.is_current(user_id, device_id, websocket):
+            await ws_manager.disconnect(user_id, device_id, websocket)
 
-        def mark_offline(st: UnifiedState) -> None:
-            if device_id in st.devices:
-                st.devices[device_id].online = False
-                st.devices[device_id].last_seen = datetime.now(UTC).isoformat()
+            def mark_offline(st: UnifiedState) -> None:
+                if device_id in st.devices:
+                    st.devices[device_id].online = False
+                    st.devices[device_id].last_seen = datetime.now(UTC).isoformat()
 
-        await store.update(user_id, mark_offline)
+            await store.update(user_id, mark_offline)
 
-        offline_env = Envelope(
-            type=EnvelopeType.presence,
-            source_device_id=device_id,
-            payload={
-                "device_id": device_id,
-                "device_type": device_type.value,
-                "online": False,
-            },
-        )
-        await ws_manager.broadcast(user_id, offline_env)
+            offline_env = Envelope(
+                type=EnvelopeType.presence,
+                source_device_id=device_id,
+                payload={
+                    "device_id": device_id,
+                    "device_type": device_type.value,
+                    "online": False,
+                },
+            )
+            await ws_manager.broadcast(user_id, offline_env)
 
 
 @router.get("/api/v1/state/{user_id}", response_model=UnifiedState)
@@ -262,6 +302,13 @@ async def update_device_state(
     device_type: DeviceType = Query(...),  # noqa: B008
     _: None = Depends(verify_api_key),
 ) -> UnifiedState:
+    err_msg = _validate_device_payload(payload, device_type)
+    if err_msg:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=err_msg,
+        )
+
     store = get_store()
 
     def mutator(st: UnifiedState) -> None:

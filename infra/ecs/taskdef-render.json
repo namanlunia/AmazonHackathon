@@ -1,0 +1,53 @@
+{
+  "family": "amazon-continuity-hub",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [
+    {
+      "name": "hub",
+      "image": "amazon-continuity-hub:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "USE_AWS", "value": "true" },
+        { "name": "AWS_REGION", "value": "us-east-1" },
+        { "name": "DYNAMODB_TABLE", "value": "AmazonContinuityState" },
+        { "name": "ACTIVE_CONTEXT_MAX_AGE_SECONDS", "value": "1800" },
+        { "name": "HEARTBEAT_INTERVAL_SECONDS", "value": "20" },
+        { "name": "HEARTBEAT_TIMEOUT_SECONDS", "value": "60" }
+      ],
+      "secrets": [
+        {
+          "name": "HUB_API_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/continuity-hub/HUB_API_KEY"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/amazon-continuity-hub",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\" || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 5
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -24,9 +25,7 @@ class StateStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def update(
-        self, user_id: str, mutator: Callable[[UnifiedState], None]
-    ) -> UnifiedState:
+    async def update(self, user_id: str, mutator: Callable[[UnifiedState], None]) -> UnifiedState:
         raise NotImplementedError
 
     @abstractmethod
@@ -62,9 +61,7 @@ class InMemoryStateStore(StateStore):
                     self._states[user_id] = state
                 return state.model_copy(deep=True)
 
-    async def update(
-        self, user_id: str, mutator: Callable[[UnifiedState], None]
-    ) -> UnifiedState:
+    async def update(self, user_id: str, mutator: Callable[[UnifiedState], None]) -> UnifiedState:
         lock = self._get_user_lock(user_id)
         async with lock:
             with self._global_lock:
@@ -122,9 +119,7 @@ class DynamoStateStore(StateStore):
                     self.client.create_table(
                         TableName=self.table_name,
                         KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
-                        AttributeDefinitions=[
-                            {"AttributeName": "user_id", "AttributeType": "S"}
-                        ],
+                        AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
                         BillingMode="PAY_PER_REQUEST",
                     )
                     waiter = self.client.get_waiter("table_exists")
@@ -159,7 +154,7 @@ class DynamoStateStore(StateStore):
                 return UnifiedState(user_id=user_id)
             data = json.loads(item["state"]["S"])
             return UnifiedState.model_validate(data)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 f"DynamoDB get failed, falling back to in-memory store: {exc}",
                 extra={"user_id": user_id, "event_type": "dynamo_get_fallback"},
@@ -170,28 +165,29 @@ class DynamoStateStore(StateStore):
         self,
         user_id: str,
         working_copy: UnifiedState,
-        expected_version: int,
-        cond: str,
+        expected_version: int | None,
+        cond: str | None,
         state_json: str,
         ttl_epoch: int,
     ) -> None:
-        self.client.put_item(
-            TableName=self.table_name,
-            Item={
+        params: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Item": {
                 "user_id": {"S": user_id},
                 "version": {"N": str(working_copy.version)},
                 "state": {"S": state_json},
                 "updated_at": {"S": working_copy.updated_at},
                 "ttl": {"N": str(ttl_epoch)},
             },
-            ConditionExpression=cond,
-            ExpressionAttributeValues={":expected": {"N": str(expected_version)}},
-        )
+        }
+        if cond is not None and expected_version is not None:
+            params["ConditionExpression"] = cond
+            params["ExpressionAttributeValues"] = {":expected": {"N": str(expected_version)}}
 
-    async def update(
-        self, user_id: str, mutator: Callable[[UnifiedState], None]
-    ) -> UnifiedState:
-        for attempt in range(3):
+        self.client.put_item(**params)
+
+    async def update(self, user_id: str, mutator: Callable[[UnifiedState], None]) -> UnifiedState:
+        for attempt in range(4):
             try:
                 current_state = await self.get(user_id)
                 expected_version = current_state.version
@@ -223,27 +219,52 @@ class DynamoStateStore(StateStore):
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code")
                 if code == "ConditionalCheckFailedException":
-                    if attempt < 2:
+                    if attempt < 3:
                         await asyncio.sleep(0.05 * (2**attempt))
                         continue
-                    logger.warning(
-                        "DynamoDB conditional check failed after 3 attempts; falling back to in-memory",
-                        extra={"user_id": user_id, "event_type": "dynamo_conflict"},
-                    )
-                    return await self._fallback_store.update(user_id, mutator)
+                    break
                 logger.warning(
-                    f"DynamoDB put failed with client error ({code}), falling back: {exc}",
+                    f"DynamoDB put failed with client error ({code}): {exc}",
                     extra={"user_id": user_id, "event_type": "dynamo_error"},
                 )
-                return await self._fallback_store.update(user_id, mutator)
-            except Exception as exc:  # noqa: BLE001
+                raise
+            except Exception as exc:
                 logger.warning(
-                    f"DynamoDB update error, falling back: {exc}",
+                    f"DynamoDB update error: {exc}",
                     extra={"user_id": user_id, "event_type": "dynamo_error"},
                 )
-                return await self._fallback_store.update(user_id, mutator)
+                raise
 
-        return await self._fallback_store.update(user_id, mutator)
+        # Retries exhausted: re-read latest from Dynamo, re-apply mutator, and do ONE unconditional put
+        from app.routers import Metrics
+
+        logger.warning(
+            "DynamoDB conditional check failed after 4 attempts; falling back to unconditional write",
+            extra={"user_id": user_id, "event_type": "dynamo_conflict_unconditional"},
+        )
+        Metrics.hub_store_writes_degraded_total_inc()
+
+        current_state = await self.get(user_id)
+        working_copy = current_state.model_copy(deep=True)
+        mutator(working_copy)
+        working_copy.version += 1
+        working_copy.updated_at = datetime.now(UTC).isoformat()
+        if len(working_copy.history) > 20:
+            working_copy.history = working_copy.history[-20:]
+
+        state_json = working_copy.model_dump_json()
+        ttl_epoch = int(time.time() + (self.settings.STATE_TTL_DAYS * 86400))
+
+        await asyncio.to_thread(
+            self._sync_put_record,
+            user_id,
+            working_copy,
+            None,
+            None,
+            state_json,
+            ttl_epoch,
+        )
+        return working_copy
 
     async def reset(self, user_id: str) -> UnifiedState:
         fresh = UnifiedState(user_id=user_id)
@@ -264,7 +285,7 @@ class DynamoStateStore(StateStore):
 
         try:
             await asyncio.to_thread(_sync_reset)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(f"DynamoDB reset failed, updating fallback store: {exc}")
         await self._fallback_store.reset(user_id)
         return fresh
