@@ -1,0 +1,105 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "continuity hub",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "WhatsOpenIntent",
+          "slots": [
+            {
+              "name": "query",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "what is open",
+            "what is open on my devices",
+            "what tabs do I have open",
+            "what am I watching",
+            "show me what is playing right now",
+            "what is currently active on my screen"
+          ]
+        },
+        {
+          "name": "AskContextIntent",
+          "slots": [
+            {
+              "name": "query",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "ask hub {query}",
+            "tell me {query}",
+            "check {query}",
+            "what's open on my browser",
+            "what is {query}",
+            "find out {query}"
+          ]
+        },
+        {
+          "name": "ContinueOnFireTVIntent",
+          "slots": [],
+          "samples": [
+            "continue this on fire tv",
+            "play this on fire tv",
+            "resume on fire tv",
+            "send this video to fire tv",
+            "cast this to fire tv",
+            "continue watching on tv"
+          ]
+        },
+        {
+          "name": "SendToBrowserIntent",
+          "slots": [],
+          "samples": [
+            "send this to browser",
+            "open this on firefox",
+            "send to firefox",
+            "continue this on computer",
+            "open this video in browser",
+            "move this stream to my browser"
+          ]
+        },
+        {
+          "name": "SmartHomeIntent",
+          "slots": [
+            {
+              "name": "device",
+              "type": "AMAZON.SearchQuery"
+            },
+            {
+              "name": "action",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "turn {action} {device}",
+            "turn {action} the {device}",
+            "switch {action} {device}",
+            "{action} the {device}",
+            "set {device} {action}",
+            "power {action} {device}"
+          ]
+        }
+      ],
+      "types": []
+    }
+  }
+}
