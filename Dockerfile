@@ -6,6 +6,8 @@ WORKDIR /build
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+RUN pip install --no-cache-dir --upgrade pip "wheel>=0.46.2" "jaraco.context>=6.1.0"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
@@ -20,7 +22,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/home/appuser/.local/bin:$PATH"
 
 RUN groupadd -g 1000 appgroup && \
-    useradd -u 1000 -g appgroup -m appuser
+    useradd -u 1000 -g appgroup -m appuser && \
+    pip install --no-cache-dir --upgrade pip "wheel>=0.46.2" "jaraco.context>=6.1.0" 2>/dev/null || true
 
 COPY --from=builder /root/.local /home/appuser/.local
 

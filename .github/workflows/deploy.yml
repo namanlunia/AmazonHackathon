@@ -27,20 +27,32 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Check AWS Credentials Configuration
+        id: check-aws
+        run: |
+          ROLE_ARN="${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}"
+          if [[ -z "$ROLE_ARN" ]]; then
+            echo "::warning ::AWS_ROLE_ARN is not configured in repository variables or secrets. Skipping live ECS deployment."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure AWS Credentials (OIDC)
+        if: steps.check-aws.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           role-session-name: continuity-hub-deploy
 
       - name: Login to Amazon ECR
         id: login-ecr
-        if: ${{ inputs.target_revision == '' }}
+        if: steps.check-aws.outputs.configured == 'true' && inputs.target_revision == ''
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, Tag, and Push Image to ECR
-        if: ${{ inputs.target_revision == '' }}
+        if: steps.check-aws.outputs.configured == 'true' && inputs.target_revision == ''
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'amazon-continuity-hub' }}
@@ -54,7 +66,7 @@ jobs:
 
       - name: Render Task Definition
         id: render-task-def
-        if: ${{ inputs.target_revision == '' }}
+        if: steps.check-aws.outputs.configured == 'true' && inputs.target_revision == ''
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: infra/ecs/taskdef-render.json
@@ -63,6 +75,7 @@ jobs:
 
       - name: Deploy Amazon ECS Task Definition
         id: deploy
+        if: steps.check-aws.outputs.configured == 'true'
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: ${{ steps.render-task-def.outputs.task-definition }}
@@ -72,6 +85,7 @@ jobs:
 
       - name: Post-Deploy Health Check Smoke Test
         id: smoke-test
+        if: steps.check-aws.outputs.configured == 'true'
         env:
           ALB_URL: ${{ vars.ALB_URL || secrets.ALB_URL }}
         run: |
